@@ -258,8 +258,7 @@ type Proxier struct {
 	nodePortAddresses []string
 	// networkInterfacer defines an interface for several net library functions.
 	// Inject for test purpose.
-	networkInterfacer     utilproxy.NetworkInterfacer
-	gracefuldeleteManager *GracefulTerminationManager
+	networkInterfacer utilproxy.NetworkInterfacer
 }
 
 // IPGetter helps get node network interface IP
@@ -434,39 +433,38 @@ func NewProxier(ipt utiliptables.Interface,
 	endpointSlicesEnabled := utilfeature.DefaultFeatureGate.Enabled(features.EndpointSliceProxying)
 
 	proxier := &Proxier{
-		portsMap:              make(map[utilproxy.LocalPort]utilproxy.Closeable),
-		serviceMap:            make(proxy.ServiceMap),
-		serviceChanges:        proxy.NewServiceChangeTracker(newServiceInfo, &isIPv6, recorder),
-		endpointsMap:          make(proxy.EndpointsMap),
-		endpointsChanges:      proxy.NewEndpointChangeTracker(hostname, nil, &isIPv6, recorder, endpointSlicesEnabled),
-		syncPeriod:            syncPeriod,
-		minSyncPeriod:         minSyncPeriod,
-		excludeCIDRs:          parseExcludedCIDRs(excludeCIDRs),
-		iptables:              ipt,
-		masqueradeAll:         masqueradeAll,
-		masqueradeMark:        masqueradeMark,
-		exec:                  exec,
-		localDetector:         localDetector,
-		hostname:              hostname,
-		nodeIP:                nodeIP,
-		portMapper:            &listenPortOpener{},
-		recorder:              recorder,
-		serviceHealthServer:   serviceHealthServer,
-		healthzServer:         healthzServer,
-		ipvs:                  ipvs,
-		ipvsScheduler:         scheduler,
-		ipGetter:              &realIPGetter{nl: NewNetLinkHandle(isIPv6)},
-		iptablesData:          bytes.NewBuffer(nil),
-		filterChainsData:      bytes.NewBuffer(nil),
-		natChains:             bytes.NewBuffer(nil),
-		natRules:              bytes.NewBuffer(nil),
-		filterChains:          bytes.NewBuffer(nil),
-		filterRules:           bytes.NewBuffer(nil),
-		netlinkHandle:         NewNetLinkHandle(isIPv6),
-		ipset:                 ipset,
-		nodePortAddresses:     nodePortAddresses,
-		networkInterfacer:     utilproxy.RealNetwork{},
-		gracefuldeleteManager: NewGracefulTerminationManager(ipvs),
+		portsMap:            make(map[utilproxy.LocalPort]utilproxy.Closeable),
+		serviceMap:          make(proxy.ServiceMap),
+		serviceChanges:      proxy.NewServiceChangeTracker(newServiceInfo, &isIPv6, recorder),
+		endpointsMap:        make(proxy.EndpointsMap),
+		endpointsChanges:    proxy.NewEndpointChangeTracker(hostname, nil, &isIPv6, recorder, endpointSlicesEnabled),
+		syncPeriod:          syncPeriod,
+		minSyncPeriod:       minSyncPeriod,
+		excludeCIDRs:        parseExcludedCIDRs(excludeCIDRs),
+		iptables:            ipt,
+		masqueradeAll:       masqueradeAll,
+		masqueradeMark:      masqueradeMark,
+		exec:                exec,
+		localDetector:       localDetector,
+		hostname:            hostname,
+		nodeIP:              nodeIP,
+		portMapper:          &listenPortOpener{},
+		recorder:            recorder,
+		serviceHealthServer: serviceHealthServer,
+		healthzServer:       healthzServer,
+		ipvs:                ipvs,
+		ipvsScheduler:       scheduler,
+		ipGetter:            &realIPGetter{nl: NewNetLinkHandle(isIPv6)},
+		iptablesData:        bytes.NewBuffer(nil),
+		filterChainsData:    bytes.NewBuffer(nil),
+		natChains:           bytes.NewBuffer(nil),
+		natRules:            bytes.NewBuffer(nil),
+		filterChains:        bytes.NewBuffer(nil),
+		filterRules:         bytes.NewBuffer(nil),
+		netlinkHandle:       NewNetLinkHandle(isIPv6),
+		ipset:               ipset,
+		nodePortAddresses:   nodePortAddresses,
+		networkInterfacer:   utilproxy.RealNetwork{},
 	}
 	// initialize ipsetList with all sets we needed
 	proxier.ipsetList = make(map[string]*IPSet)
@@ -477,7 +475,6 @@ func NewProxier(ipt utiliptables.Interface,
 	klog.V(2).Infof("ipvs(%s) sync params: minSyncPeriod=%v, syncPeriod=%v, burstSyncs=%d",
 		ipt.Protocol(), minSyncPeriod, syncPeriod, burstSyncs)
 	proxier.syncRunner = async.NewBoundedFrequencyRunner("sync-runner", proxier.syncProxyRules, minSyncPeriod, syncPeriod, burstSyncs)
-	proxier.gracefuldeleteManager.Run()
 	return proxier, nil
 }
 
@@ -1946,7 +1943,7 @@ func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNode
 	}
 
 	// curEndpoints represents IPVS destinations listed from current system.
-	curEndpoints := sets.NewString()
+	curEndpoints := make(map[string]*utilipvs.RealServer)
 	// newEndpoints represents Endpoints watched from API Server.
 	newEndpoints := sets.NewString()
 
@@ -1956,7 +1953,7 @@ func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNode
 		return err
 	}
 	for _, des := range curDests {
-		curEndpoints.Insert(des.String())
+		curEndpoints[des.String()] = des
 	}
 
 	endpoints := proxier.endpointsMap[svcPortName]
@@ -1996,18 +1993,17 @@ func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNode
 			Weight:  1,
 		}
 
-		if curEndpoints.Has(ep) {
-			// check if newEndpoint is in gracefulDelete list, if true, delete this ep immediately
-			uniqueRS := GetUniqueRSName(vs, newDest)
-			if !proxier.gracefuldeleteManager.InTerminationList(uniqueRS) {
+		if dest, ok := curEndpoints[ep]; ok {
+			// check if newEndpoint is in graceful deletion, if true, update this ep to weight == 1
+			if dest.Weight > 0 {
 				continue
 			}
-			klog.V(5).Infof("new ep %q is in graceful delete list", uniqueRS)
-			err := proxier.gracefuldeleteManager.MoveRSOutofGracefulDeleteList(uniqueRS)
+			klog.V(5).Infof("new ep %q is in graceful deletion", ep)
+			err = proxier.ipvs.UpdateRealServer(appliedVirtualServer, newDest)
 			if err != nil {
-				klog.Errorf("Failed to delete endpoint: %v in gracefulDeleteQueue, error: %v", ep, err)
-				continue
+				klog.Errorf("Failed to update destination: %v, error: %v", newDest, err)
 			}
+			continue
 		}
 		err = proxier.ipvs.AddRealServer(appliedVirtualServer, newDest)
 		if err != nil {
@@ -2016,12 +2012,9 @@ func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNode
 		}
 	}
 	// Delete old endpoints
-	for _, ep := range curEndpoints.Difference(newEndpoints).UnsortedList() {
-		// if curEndpoint is in gracefulDelete, skip
-		uniqueRS := vs.String() + "/" + ep
-		if proxier.gracefuldeleteManager.InTerminationList(uniqueRS) {
-			continue
-		}
+	for _, ep := range sets.StringKeySet(curEndpoints).Difference(newEndpoints).UnsortedList() {
+		rsToDelete := curEndpoints[ep]
+
 		ip, port, err := net.SplitHostPort(ep)
 		if err != nil {
 			klog.Errorf("Failed to parse endpoint: %v, error: %v", ep, err)
@@ -2038,10 +2031,22 @@ func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNode
 			Port:    uint16(portNum),
 		}
 
-		klog.V(5).Infof("Using graceful delete to delete: %v", uniqueRS)
-		err = proxier.gracefuldeleteManager.GracefulDeleteRS(appliedVirtualServer, delDest)
+		klog.V(5).Infof("Using graceful delete to delete: %v", ep)
+		if utilipvs.IsRsGracefulTerminationNeeded(appliedVirtualServer.Protocol) && rsToDelete.ActiveConn+rsToDelete.InactiveConn != 0 {
+			klog.V(5).Infof("Not deleting, RS %v: %v ActiveConn, %v InactiveConn", ep, rsToDelete.ActiveConn, rsToDelete.InactiveConn)
+			if rsToDelete.Weight == 0 {
+				continue
+			}
+			err = proxier.ipvs.UpdateRealServer(appliedVirtualServer, delDest)
+			if err != nil {
+				klog.Errorf("Failed to update destination: %v, error: %v", ep, err)
+			}
+			continue
+		}
+
+		err = proxier.ipvs.DeleteRealServer(appliedVirtualServer, delDest)
 		if err != nil {
-			klog.Errorf("Failed to delete destination: %v, error: %v", uniqueRS, err)
+			klog.Errorf("Failed to delete destination: %v, error: %v", ep, err)
 			continue
 		}
 	}

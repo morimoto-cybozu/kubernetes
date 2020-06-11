@@ -120,34 +120,33 @@ func NewFakeProxier(ipt utiliptables.Interface, ipvs utilipvs.Interface, ipset u
 		ipsetList[is.name] = NewIPSet(ipset, is.name, is.setType, false, is.comment)
 	}
 	p := &Proxier{
-		exec:                  fexec,
-		serviceMap:            make(proxy.ServiceMap),
-		serviceChanges:        proxy.NewServiceChangeTracker(newServiceInfo, nil, nil),
-		endpointsMap:          make(proxy.EndpointsMap),
-		endpointsChanges:      proxy.NewEndpointChangeTracker(testHostname, nil, nil, nil, endpointSlicesEnabled),
-		excludeCIDRs:          excludeCIDRs,
-		iptables:              ipt,
-		ipvs:                  ipvs,
-		ipset:                 ipset,
-		strictARP:             false,
-		localDetector:         proxyutiliptables.NewNoOpLocalDetector(),
-		hostname:              testHostname,
-		portsMap:              make(map[utilproxy.LocalPort]utilproxy.Closeable),
-		portMapper:            &fakePortOpener{[]*utilproxy.LocalPort{}},
-		serviceHealthServer:   healthcheck.NewFakeServiceHealthServer(),
-		ipvsScheduler:         DefaultScheduler,
-		ipGetter:              &fakeIPGetter{nodeIPs: nodeIPs},
-		iptablesData:          bytes.NewBuffer(nil),
-		filterChainsData:      bytes.NewBuffer(nil),
-		natChains:             bytes.NewBuffer(nil),
-		natRules:              bytes.NewBuffer(nil),
-		filterChains:          bytes.NewBuffer(nil),
-		filterRules:           bytes.NewBuffer(nil),
-		netlinkHandle:         netlinktest.NewFakeNetlinkHandle(),
-		ipsetList:             ipsetList,
-		nodePortAddresses:     make([]string, 0),
-		networkInterfacer:     proxyutiltest.NewFakeNetwork(),
-		gracefuldeleteManager: NewGracefulTerminationManager(ipvs),
+		exec:                fexec,
+		serviceMap:          make(proxy.ServiceMap),
+		serviceChanges:      proxy.NewServiceChangeTracker(newServiceInfo, nil, nil),
+		endpointsMap:        make(proxy.EndpointsMap),
+		endpointsChanges:    proxy.NewEndpointChangeTracker(testHostname, nil, nil, nil, endpointSlicesEnabled),
+		excludeCIDRs:        excludeCIDRs,
+		iptables:            ipt,
+		ipvs:                ipvs,
+		ipset:               ipset,
+		strictARP:           false,
+		localDetector:       proxyutiliptables.NewNoOpLocalDetector(),
+		hostname:            testHostname,
+		portsMap:            make(map[utilproxy.LocalPort]utilproxy.Closeable),
+		portMapper:          &fakePortOpener{[]*utilproxy.LocalPort{}},
+		serviceHealthServer: healthcheck.NewFakeServiceHealthServer(),
+		ipvsScheduler:       DefaultScheduler,
+		ipGetter:            &fakeIPGetter{nodeIPs: nodeIPs},
+		iptablesData:        bytes.NewBuffer(nil),
+		filterChainsData:    bytes.NewBuffer(nil),
+		natChains:           bytes.NewBuffer(nil),
+		natRules:            bytes.NewBuffer(nil),
+		filterChains:        bytes.NewBuffer(nil),
+		filterRules:         bytes.NewBuffer(nil),
+		netlinkHandle:       netlinktest.NewFakeNetlinkHandle(),
+		ipsetList:           ipsetList,
+		nodePortAddresses:   make([]string, 0),
+		networkInterfacer:   proxyutiltest.NewFakeNetwork(),
 	}
 	p.setInitialized(true)
 	p.syncRunner = async.NewBoundedFrequencyRunner("test-sync-runner", p.syncProxyRules, 0, time.Minute, 1)
@@ -3518,9 +3517,7 @@ func TestCleanLegacyRealServersExcludeCIDRs(t *testing.T) {
 	ipt := iptablestest.NewFake()
 	ipvs := ipvstest.NewFake()
 	ipset := ipsettest.NewFake(testIPSetVersion)
-	gtm := NewGracefulTerminationManager(ipvs)
 	fp := NewFakeProxier(ipt, ipvs, ipset, nil, parseExcludedCIDRs([]string{"4.4.4.4/32"}), false)
-	fp.gracefuldeleteManager = gtm
 
 	vs := &utilipvs.VirtualServer{
 		Address:   net.ParseIP("4.4.4.4"),
@@ -3559,8 +3556,6 @@ func TestCleanLegacyRealServersExcludeCIDRs(t *testing.T) {
 		map[string]*utilipvs.VirtualServer{"ipvs0": vs},
 		map[string]bool{"4.4.4.4": true},
 	)
-
-	fp.gracefuldeleteManager.tryDeleteRs()
 
 	remainingRealServers, _ := fp.ipvs.GetRealServers(vs)
 

@@ -9,7 +9,6 @@ load(
 go_test(
     name = "go_default_test",
     srcs = [
-        "graceful_termination_test.go",
         "ipset_test.go",
         "proxier_test.go",
     ],
@@ -47,7 +46,6 @@ go_test(
 go_library(
     name = "go_default_library",
     srcs = [
-        "graceful_termination.go",
         "ipset.go",
         "netlink.go",
         "netlink_linux.go",
